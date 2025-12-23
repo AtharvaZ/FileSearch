@@ -23,26 +23,42 @@ def return_pdf_info(file_path: str) -> list[str]:
     modified_time = time.ctime(modified_time)
 
     text = ""
-    with open(file_path, "rb") as file:
-        pdf_reader = PyPDF2.PdfReader(file)
-        for page in pdf_reader.pages:
-            text += page.extract_text() + "\n"
+    try:
+        with open(file_path, "rb") as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            for page in pdf_reader.pages:
+                try:
+                    text += page.extract_text() + "\n"
+                except Exception:
+                    # Skip pages that fail to extract
+                    continue
+    except Exception as e:
+        raise Exception(f"Failed to read PDF: {str(e)}")
+
+    if not text.strip():
+        raise Exception("PDF contains no extractable text")
 
     hashed_content = hash_file(text)
 
-    return [file_path, file_name, hashed_content, modified_time]
+    return [file_path, file_name, hashed_content, modified_time, text]
 
 def return_docx_info(file_path: str) -> list[str]:
     file_name = os.path.basename(file_path)
     modified_time = os.path.getmtime(file_path)
     modified_time = time.ctime(modified_time)
 
-    doc = Document(file_path)
-    text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+    try:
+        doc = Document(file_path)
+        text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+    except Exception as e:
+        raise Exception(f"Failed to read DOCX: {str(e)}")
+
+    if not text.strip():
+        raise Exception("DOCX contains no extractable text")
 
     hashed_content = hash_file(text)
-    
-    return [file_path, file_name, hashed_content, modified_time]
+
+    return [file_path, file_name, hashed_content, modified_time, text]
 
 
 def hash_file(text: str) -> str:
