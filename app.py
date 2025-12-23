@@ -217,11 +217,11 @@ class FileSearchApp:
         self.results_listbox.delete(0, tk.END)
         self.current_results = []
 
-        # Perform search
+        # Perform search using vector semantic search
         self.results_label.config(text=f"Searching for '{query}'...")
         self.root.update_idletasks()
 
-        results = search_files(query, case_sensitive=False)
+        results = search_files(query, k=10)  # Get top 10 semantic matches
 
         if not results:
             self.results_label.config(text=f"No results found for '{query}'")
@@ -231,6 +231,7 @@ class FileSearchApp:
             self.current_results = results
 
             for idx, result in enumerate(results):
+                # Show file name with distance score
                 display_text = f"  {result['file_name']}"
                 self.results_listbox.insert(tk.END, display_text)
 
