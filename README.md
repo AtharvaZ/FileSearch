@@ -1,6 +1,8 @@
 # FileSearch
 
-A semantic file search application using vector embeddings to search through PDF and DOCX documents.
+Ever spent 20 minutes hunting for that PDF you *know* you saved somewhere? Yeah, me too.
+
+FileSearch uses AI-powered semantic search to find your documents by *what they mean*, not just what they're named. Built with FAISS and sentence transformers, it's like having a photographic memory for all your files - minus the superhero origin story.
 
 ## Features
 
@@ -89,4 +91,3 @@ Edit `search_directory` in `main.py` to change the directory being indexed.
 - **Database**: SQLite with SQLAlchemy ORM
 - **Chunking**: 400 characters with 50 character overlap
 - **Batch Size**: 512 chunks per encoding batch
-  > > > > > > > feat/semantic_search_faiss
