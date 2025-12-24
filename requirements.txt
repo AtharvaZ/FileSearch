@@ -3,6 +3,7 @@
 # Vector search and embeddings
 faiss-cpu==1.13.0
 sentence-transformers==5.1.2
+torch>=2.0.0
 
 # Database
 sqlalchemy==2.0.43
@@ -10,3 +11,4 @@ sqlalchemy==2.0.43
 # File parsing
 PyPDF2==3.0.1
 python-docx==1.2.0
+python-pptx==0.6.21

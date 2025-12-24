@@ -133,6 +133,27 @@ class FileSearchApp:
         )
         index_btn.pack(side=tk.LEFT, padx=(10, 0))
 
+        # Filter options frame
+        filter_frame = tk.Frame(main_frame, bg="#2b2b2b")
+        filter_frame.pack(fill=tk.X, pady=(10, 5), padx=6)
+
+        # Checkbox to exclude code files
+        self.exclude_code_var = tk.BooleanVar(value=False)
+        exclude_code_check = tk.Checkbutton(
+            filter_frame,
+            text="Exclude code files (.py, .js, .cpp, etc.)",
+            variable=self.exclude_code_var,
+            font=("SF Pro", 11),
+            bg="#2b2b2b",
+            fg="#ffffff",
+            selectcolor="#3a3a3a",
+            activebackground="#2b2b2b",
+            activeforeground="#ffffff",
+            cursor="hand2",
+            command=lambda: self.perform_search() if self.search_var.get().strip() else None
+        )
+        exclude_code_check.pack(side=tk.LEFT)
+
         # Results label
         self.results_label = tk.Label(
             main_frame,
@@ -221,7 +242,9 @@ class FileSearchApp:
         self.results_label.config(text=f"Searching for '{query}'...")
         self.root.update_idletasks()
 
-        results = search_files(query, k=10)  # Get top 10 semantic matches
+        # Use the checkbox to determine if code files should be excluded
+        exclude_code = self.exclude_code_var.get()
+        results = search_files(query, k=15, exclude_code_files=exclude_code)
 
         if not results:
             self.results_label.config(text=f"No results found for '{query}'")
