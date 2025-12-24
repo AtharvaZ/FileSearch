@@ -1,7 +1,8 @@
 import os
 from database import *
 from file_reader import read_file
-from vector_search import load_index, save_index, remove_file_from_index, add_file_to_index, add_files_to_index_batch, search_similar
+from vector_search import load_index, save_index, remove_file_from_index
+from vector_search import add_file_to_index, add_files_to_index_batch, search_similar_with_reranking
 
 
 
@@ -59,6 +60,7 @@ def index_files():
 
     print(f"\nSuccessfully read {len(file_data)} files")
 
+    # Check for deleted files and remove from index
     db_files = get_all_files()
     for db_file in db_files:
         if not os.path.exists(db_file.file_path):
@@ -145,7 +147,7 @@ def index_files():
 def search_files(query: str, k: int = 5):
     """Search files using vector semantic search"""
     load_index()
-    search_results = search_similar(query, k=k)
+    search_results = search_similar_with_reranking(query, k=k)
 
     if not search_results:
         print(f"No results found for '{query}'")

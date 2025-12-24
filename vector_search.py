@@ -1,5 +1,5 @@
 import faiss
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import numpy as np
 import os
 import pickle
@@ -9,6 +9,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
 dimension = 384
+
+reranker_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 base_index = faiss.IndexFlatL2(dimension)
 index = faiss.IndexIDMap(base_index)
@@ -122,7 +124,7 @@ def add_files_to_index_batch(files_data: list[tuple[int, str]], batch_size: int 
     # Add to FAISS and metadata
     chunk_ids = []
     for file_faiss_index, chunk_num, chunk_content in chunk_info:
-        chunk_id = file_faiss_index * 5000 + chunk_num
+        chunk_id = file_faiss_index * 10000 + chunk_num
         chunk_ids.append(chunk_id)
 
         chunk_metadata.append({
@@ -139,25 +141,38 @@ def add_files_to_index_batch(files_data: list[tuple[int, str]], batch_size: int 
     return len(all_chunks)
 
 
-def search_similar(query: str, k: int = 5):
-
+def search_similar_with_reranking(query: str, k: int = 5, initial_k: int = 20):
+    """
+    Two-stage search: retrieve candidates with FAISS, then rerank with cross-encoder
+    """
     query_embedding = transformer_model.encode([query], convert_to_numpy=True).astype('float32')
-    distances, indices = index.search(query_embedding, k)
+    distance, indices = index.search(query_embedding, initial_k)
 
-    results = []
-    for dist, idx in zip(distances[0], indices[0]):
-        if idx == -1:  # No result found
+    candidates = []
+    for dist, idx in zip(distance[0], indices[0]):
+        if idx == -1:
             continue
 
-        metadata = next((m for m in chunk_metadata if m['faiss_id'] == int(idx)), None)
+        metadata = next((d for d in chunk_metadata if d['faiss_id'] == int(idx)), None)
         if metadata:
-            results.append({
-                'file_faiss_index': metadata['file_faiss_index'],
-                'distance': float(dist),
-                'chunk_text': metadata['chunk_text']
+            candidates.append({
+                "file_faiss_index": metadata['file_faiss_index'],
+                "distance": float(dist),
+                "chunk_text": metadata['chunk_text'],
+                "idx": int(idx)
             })
+            
+    if not candidates:
+        return []
+    query_doc_pairs = [[query, candidate["chunk_text"]] for candidate in candidates]
 
-    return results
+    #enhance search with reranker
+    rerank_scores = reranker_model.predict(query_doc_pairs)
+    for candidate, score in zip(candidates, rerank_scores):
+        candidate['rerank_score'] = float(score)
+
+    candidates = sorted(candidates, key=lambda x: x['rerank_score'], reverse=True)
+    return candidates[:k]
 
 
 def save_index():
