@@ -24,12 +24,13 @@ def get_file_content(path: str) -> list[str]:
     print(f"Found {len(all_paths_content)} PDF/DOCX files")
     return all_paths_content
     
-def check_modified_file(file_path: str, modified_time: str) -> bool:
+def check_modified_file(file_path: str, hashed_file: str) -> bool:
     existing_file = get_file_by_path(file_path)
-    if existing_file:
-        existing_modified_time = existing_file.modified_time.strftime("%a %b %d %H:%M:%S %Y")
-        return existing_modified_time != modified_time
-    return True
+    if not existing_file:
+        return True
+    file_hash = existing_file.file_hash
+    return file_hash != hashed_file
+
 
 def index_files():
     print("Loading existing FAISS index...")
@@ -81,7 +82,7 @@ def index_files():
     for data in file_data:
         existing_file = get_file_by_path(data[0])
         if existing_file:
-            if check_modified_file(data[0], data[3]):
+            if check_modified_file(data[0], data[2]):
                 modified_count += 1
                 print(f"Re-indexing modified file: {data[1]}")
                 try:
