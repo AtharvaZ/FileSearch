@@ -40,6 +40,37 @@ def create_file(file_path: str, file_name: str, file_hash: str, modified_time: s
     finally:
         db.close()
 
+def create_files_bulk(files_data: List[tuple[str, str, str, str, int]]) -> int:
+    """Bulk insert multiple files (much faster than individual inserts)
+
+    Args:
+        files_data: List of tuples (file_path, file_name, file_hash, modified_time, faiss_index)
+
+    Returns:
+        Number of files inserted
+    """
+    db = SessionLocal()
+    try:
+        file_records = []
+        for file_path, file_name, file_hash, modified_time, faiss_index in files_data:
+            modified_dt = datetime.fromtimestamp(time.mktime(time.strptime(modified_time)))
+            file_records.append(Files(
+                faiss_index=faiss_index,
+                file_path=file_path,
+                file_name=file_name,
+                file_hash=file_hash,
+                modified_time=modified_dt
+            ))
+
+        db.bulk_save_objects(file_records)
+        db.commit()
+        return len(file_records)
+    except Exception as e:
+        db.rollback()
+        raise e
+    finally:
+        db.close()
+
 def get_file_by_id(file_id: int) -> Optional[Files]:
     db = SessionLocal()
     try:

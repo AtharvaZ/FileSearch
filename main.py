@@ -1,38 +1,97 @@
 import os
+from multiprocessing import Pool, cpu_count
+import signal
+from functools import wraps
 from database import *
-from file_reader import read_file
+from database import create_files_bulk
+from file_reader import read_file, CODE_FILE_EXTENSIONS, TEXT_FILE_EXTENSIONS
 from vector_search import load_index, save_index, remove_file_from_index
 from vector_search import add_file_to_index, add_files_to_index_batch, search_similar_with_reranking
 
 
 
 search_directory = "/Users/atharvazaveri/"
-file_paths = list()
+SUPPORTED_EXTENSIONS = tuple(['.pdf', '.docx', '.pptx'] + list(TEXT_FILE_EXTENSIONS) + list(CODE_FILE_EXTENSIONS))
+MAX_FILE_SIZE_MB = 10  # Skip files larger than 10MB
+FILE_READ_TIMEOUT = 5  # Timeout in seconds for file reading
 
 def get_file_content(path: str) -> list[str]:
     all_paths_content = []
     print(f"Scanning directory: {path}")
 
+    # Skip directories that typically contain many files but aren't useful for search
+    SKIP_DIRS = {
+        # System directories
+        'Library', 'Applications', 'System',
+        # Development bloat
+        'node_modules', 'venv', 'env', '__pycache__',
+        '.git', '.vscode', '.idea', 'cache', 'Cache',
+        'build', 'dist', '.next', '.nuxt',
+        # Media and downloads (usually not searchable text)
+        'Downloads', 'Movies', 'Music', 'Pictures', 'Photos',
+        # Package managers and build artifacts
+        '.cargo', '.rustup', '.npm', '.gradle', '.m2',
+        'target', 'bin', 'obj', 'out', 'vendor',
+        # Logs and temp files
+        'Logs', 'logs', 'tmp', 'temp', 'Temp',
+        # iOS/Android development
+        'Pods', 'DerivedData', 'Android', 'Gradle',
+    }
+
     for root, dirs, files in os.walk(path):
-        # Skip hidden directories and common system/app directories
-        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ['Library', 'Applications', 'System']]
+        # Skip hidden directories and bloat directories
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in SKIP_DIRS]
 
         for file in files:
-            if file.endswith(('.pdf', '.docx')):
-                all_paths_content.append(os.path.abspath(os.path.join(root, file)))
+            if file.endswith(SUPPORTED_EXTENSIONS):
+                file_path = os.path.abspath(os.path.join(root, file))
+                # Skip files larger than MAX_FILE_SIZE_MB
+                try:
+                    if os.path.getsize(file_path) > MAX_FILE_SIZE_MB * 1024 * 1024:
+                        continue
+                except OSError:
+                    continue  # Skip if we can't get file size
+                all_paths_content.append(file_path)
 
-    print(f"Found {len(all_paths_content)} PDF/DOCX files")
+    print(f"Found {len(all_paths_content)} files")
     return all_paths_content
     
 def check_modified_file(file_path: str, hashed_file: str) -> bool:
     existing_file = get_file_by_path(file_path)
     if not existing_file:
         return True
-    file_hash = existing_file.file_hash
-    return file_hash != hashed_file
+    return existing_file.file_hash != hashed_file
 
+class TimeoutException(Exception):
+    pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException()
+
+def _read_file_safe(file_path: str):
+    """Wrapper for multiprocessing - catches exceptions per file with timeout"""
+    try:
+        # Set up timeout
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(FILE_READ_TIMEOUT)
+
+        try:
+            result = read_file(file_path)
+            signal.alarm(0)  # Cancel the alarm
+            return result
+        except TimeoutException:
+            signal.alarm(0)
+            return None, (file_path, "Timeout")
+    except PermissionError:
+        signal.alarm(0)
+        return None, (file_path, "Permission denied")
+    except Exception as e:
+        signal.alarm(0)
+        return None, (file_path, str(e))
 
 def index_files():
+    import time
+
     print("Loading existing FAISS index...")
     load_index()
 
@@ -41,16 +100,30 @@ def index_files():
     file_data = []
     failed_files = []
 
-    print(f"\nReading file contents...")
-    for i, content in enumerate(file_contents, 1):
-        try:
-            if i % 50 == 0:
-                print(f"  Processed {i}/{len(file_contents)} files...")
-            file_data.append(read_file(content))
-        except PermissionError:
-            failed_files.append((content, "Permission denied"))
-        except Exception as e:
-            failed_files.append((content, str(e)))
+    # Use multiprocessing to read files in parallel (use 50% of cores to be conservative)
+    num_workers = max(2, cpu_count() // 2)
+    print(f"\nReading file contents using {num_workers} workers...")
+
+    read_start = time.time()
+
+    with Pool(processes=num_workers) as pool:
+        results = pool.map(_read_file_safe, file_contents)
+
+    # Separate successful reads from failures
+    timeout_files = []
+    for result in results:
+        if result is None:
+            continue
+        if isinstance(result, tuple) and len(result) == 2 and result[0] is None:
+            path, error = result[1]
+            if error == "Timeout":
+                timeout_files.append(path)
+            else:
+                failed_files.append(result[1])
+        else:
+            file_data.append(result)
+
+    read_time = time.time() - read_start
 
     if failed_files:
         print(f"\n⚠️  Failed to read {len(failed_files)} files:")
@@ -59,7 +132,10 @@ def index_files():
         if len(failed_files) > 5:
             print(f"  ... and {len(failed_files) - 5} more")
 
-    print(f"\nSuccessfully read {len(file_data)} files")
+    if timeout_files:
+        print(f"\n⏱️  {len(timeout_files)} files timed out (will retry after main indexing)")
+
+    print(f"\nSuccessfully read {len(file_data)} files in {read_time:.1f}s")
 
     # Check for deleted files and remove from index
     db_files = get_all_files()
@@ -104,51 +180,135 @@ def index_files():
 
     print(f"\nSummary: {unchanged_count} unchanged, {modified_count} modified, {len(new_files_batch)} new files")
 
-    # Process new files in batches of 350
-    if new_files_batch:
-        batch_size = 350
-        total_batches = (len(new_files_batch) + batch_size - 1) // batch_size
-        print(f"\nProcessing {len(new_files_batch)} new files in {total_batches} batch(es)...")
+    # Process new files in larger batches for better performance
+    try:
+        if new_files_batch:
+            batch_size = 1000  # Increased from 350 to reduce number of batches
+            total_batches = (len(new_files_batch) + batch_size - 1) // batch_size
+            print(f"\nProcessing {len(new_files_batch)} new files in {total_batches} batch(es)...")
 
-        for i in range(0, len(new_files_batch), batch_size):
-            batch = new_files_batch[i:i + batch_size]
-            batch_num = i//batch_size + 1
-            print(f"\n[Batch {batch_num}/{total_batches}] Processing {len(batch)} files...")
+            for i in range(0, len(new_files_batch), batch_size):
+                batch = new_files_batch[i:i + batch_size]
+                batch_num = i//batch_size + 1
+                batch_start = time.time()
+                print(f"\n[Batch {batch_num}/{total_batches}] Processing {len(batch)} files...")
 
-            # Create database records first
-            print(f"  Creating database records...")
-            db_errors = 0
-            for faiss_idx, data in batch:
+                # Create database records using bulk insert (much faster)
+                db_start = time.time()
+                print(f"  Creating database records...")
                 try:
-                    create_file(file_path=data[0],
-                            file_name=data[1],
-                            file_hash=data[2],
-                            modified_time=data[3],
-                            faiss_index=faiss_idx)
+                    # Prepare bulk insert data
+                    bulk_data = [(data[0], data[1], data[2], data[3], faiss_idx)
+                                for faiss_idx, data in batch]
+                    count = create_files_bulk(bulk_data)
+                    db_time = time.time() - db_start
+                    print(f"  ✓ Database: {count} records created ({db_time:.1f}s)")
                 except Exception as e:
-                    db_errors += 1
-                    print(f"    ⚠️  DB error for {data[1]}: {e}")
+                    db_time = time.time() - db_start
+                    print(f"  ⚠️  Database bulk insert failed ({db_time:.1f}s): {e}")
+                    # Fallback to individual inserts if bulk fails
+                    print(f"  Falling back to individual inserts...")
+                    db_errors = 0
+                    for faiss_idx, data in batch:
+                        try:
+                            create_file(file_path=data[0],
+                                    file_name=data[1],
+                                    file_hash=data[2],
+                                    modified_time=data[3],
+                                    faiss_index=faiss_idx)
+                        except Exception as e:
+                            db_errors += 1
+                    if db_errors > 0:
+                        print(f"  ⚠️  {db_errors} errors during fallback")
 
-            if db_errors == 0:
-                print(f"  ✓ Database records created")
-            else:
-                print(f"  ⚠️  Database records created with {db_errors} errors")
+                # Batch encode all files in this batch
+                encode_start = time.time()
+                try:
+                    batch_data = [(faiss_idx, data[4]) for faiss_idx, data in batch]
+                    add_files_to_index_batch(batch_data, batch_size=1024)
+                    encode_time = time.time() - encode_start
+                    print(f"  ✓ Encoding completed ({encode_time:.1f}s)")
+                except Exception as e:
+                    print(f"  ⚠️  Error during batch encoding: {e}")
 
-            # Batch encode all files in this batch
-            try:
-                batch_data = [(faiss_idx, data[4]) for faiss_idx, data in batch]
-                add_files_to_index_batch(batch_data, batch_size=512)
-            except Exception as e:
-                print(f"  ⚠️  Error during batch encoding: {e}")
+                batch_time = time.time() - batch_start
+                print(f"  Batch {batch_num} total time: {batch_time:.1f}s")
 
-    print("\nSaving FAISS index...")
-    save_index()
-    print("FAISS index saved!")
+        # Retry timeout files with longer timeout
+        if timeout_files:
+            print(f"\n⏱️  Retrying {len(timeout_files)} files that timed out (timeout: 30s)...")
+            global FILE_READ_TIMEOUT
+            original_timeout = FILE_READ_TIMEOUT
+            FILE_READ_TIMEOUT = 30  # Longer timeout for retry
 
-def search_files(query: str, k: int = 5):
-    """Search files using vector semantic search"""
+            retry_start = time.time()
+            retry_success = []
+            retry_failed = []
+
+            for file_path in timeout_files:
+                result = _read_file_safe(file_path)
+                if result and not (isinstance(result, tuple) and len(result) == 2 and result[0] is None):
+                    retry_success.append((file_path, result))
+                else:
+                    retry_failed.append(file_path)
+
+            FILE_READ_TIMEOUT = original_timeout  # Restore original timeout
+
+            retry_time = time.time() - retry_start
+            print(f"\n  Successfully read {len(retry_success)} files in retry ({retry_time:.1f}s)")
+            if retry_failed:
+                print(f"  Still failed: {len(retry_failed)} files")
+
+            # Index the successfully retried files
+            if retry_success:
+                print(f"\n  Indexing {len(retry_success)} retry files...")
+                for file_path, file_data_tuple in retry_success:
+                    existing_file = get_file_by_path(file_data_tuple[0])
+                    if existing_file:
+                        # Update existing file
+                        try:
+                            remove_file_from_index(existing_file.faiss_index)
+                            add_file_to_index(existing_file.faiss_index, file_data_tuple[4])
+                            update_file(file_id=existing_file.file_id,
+                                      file_path=file_data_tuple[0],
+                                      file_name=file_data_tuple[1],
+                                      file_hash=file_data_tuple[2],
+                                      modified_time=file_data_tuple[3])
+                            print(f"    ✓ Updated: {file_data_tuple[1]}")
+                        except Exception as e:
+                            print(f"    ⚠️  Error updating {file_data_tuple[1]}: {e}")
+                    else:
+                        # Add as new file
+                        try:
+                            faiss_idx = max([f.faiss_index for f in get_all_files()] + [0]) + 1
+                            create_file(file_path=file_data_tuple[0],
+                                      file_name=file_data_tuple[1],
+                                      file_hash=file_data_tuple[2],
+                                      modified_time=file_data_tuple[3],
+                                      faiss_index=faiss_idx)
+                            add_file_to_index(faiss_idx, file_data_tuple[4])
+                            print(f"    ✓ Added: {file_data_tuple[1]}")
+                        except Exception as e:
+                            print(f"    ⚠️  Error adding {file_data_tuple[1]}: {e}")
+
+    finally:
+        # Always save the index, even if there were errors during processing
+        print("\nSaving FAISS index...")
+        save_index()
+        print("FAISS index saved!")
+
+def search_files(query: str, k: int = 5, exclude_code_files: bool = True):
+    """Search files using vector semantic search
+
+    Args:
+        query: Search query string
+        k: Number of results to return
+        exclude_code_files: If True, filters out code files (.py, .js, etc.) from results
+    """
     load_index()
-    search_results = search_similar_with_reranking(query, k=k)
+    # Request more chunks to ensure we get k unique files after deduplication and filtering
+    # Use 5x multiplier to account for both deduplication and code file filtering
+    search_results = search_similar_with_reranking(query, k=k*5)
 
     if not search_results:
         print(f"No results found for '{query}'")
@@ -169,10 +329,22 @@ def search_files(query: str, k: int = 5):
             'file_name': file_record.file_name,
             'file_path': file_record.file_path,
             'distance': best_match['distance'],
-            'chunk_text': best_match['chunk_text']
+            'chunk_text': best_match['chunk_text'],
+            'rerank_score': best_match.get('rerank_score', 0)
         })
 
-    return results
+    # Sort by rerank score (higher is better)
+    results = sorted(results, key=lambda x: x.get('rerank_score', 0), reverse=True)
+
+    # Filter out code files if requested
+    if exclude_code_files:
+        original_count = len(results)
+        results = [r for r in results if not r['file_path'].endswith(tuple(CODE_FILE_EXTENSIONS))]
+        filtered_count = original_count - len(results)
+        if filtered_count > 0:
+            print(f"Filtered out {filtered_count} code file(s)\n")
+
+    return results[:k]
 
 if __name__ == "__main__":
     import sys
