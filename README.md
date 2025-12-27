@@ -60,10 +60,6 @@ The IVF-PQ index requires training before use. The system automatically:
 3. Adds all vectors to the trained index
 4. Subsequent runs use the pre-trained index for fast indexing
 
-## Current Status
-
-⚠️ **Work in Progress** - This project is actively being developed.
-
 ## Project Structure
 
 - `main.py` - Main indexing and search logic
@@ -75,24 +71,15 @@ The IVF-PQ index requires training before use. The system automatically:
 
 ## Roadmap
 
-**Target Completion: December 26th, 2024**
-
 ### Planned Features
 
-1. **Additional File Format Support**
-
-   - Code files (.py, .js, .java, etc.)
-   - Plain text files (.txt)
-   - PowerPoint presentations (.pptx)
-   - Markdown files (.md)
-
-2. **UI Enhancement**
+1. **UI Enhancement**
 
    - Modern, clean user interface
    - Better result visualization
    - Search history
 
-3. **Performance**
+2. **Performance**
    - Watchdog integration for real-time file monitoring
    - Automatic re-indexing on file changes
    - Faster search response times
