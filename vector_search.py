@@ -122,31 +122,30 @@ def train_index_if_needed():
     train_data = np.vstack(training_embeddings)
     n_vectors = train_data.shape[0]
 
-    # Adjust nlist based on data size (rule of thumb: sqrt(n) to 4*sqrt(n))
-    optimal_nlist = min(int(4 * np.sqrt(n_vectors)), 1000)
-    optimal_nlist = max(optimal_nlist, 10)  # At least 10 clusters
-
-    # Train requires at least 39*nlist vectors (FAISS requirement)
-    min_train_vectors = 39 * optimal_nlist
+    # FIXED: Use a fixed target nlist (1000) to prevent infinite loop
+    # where the requirement (39*nlist) grows faster than data collection
+    target_nlist = 1000
+    min_train_vectors = 39 * target_nlist  # = 39,000 vectors
 
     if n_vectors >= min_train_vectors:
-        print(f"Training IVF-PQ index with {n_vectors} vectors (nlist={optimal_nlist})...")
+        print(f"\nTraining IVF-PQ index with {n_vectors} vectors (nlist={target_nlist})...")
 
-        # Recreate index with optimal nlist
-        if optimal_nlist != nlist:
-            print(f"Adjusting nlist from {nlist} to {optimal_nlist}")
-            quantizer = faiss.IndexFlatL2(dimension)
-            base_index = faiss.IndexIVFPQ(quantizer, dimension, optimal_nlist, m, nbits)
-            index = faiss.IndexIDMap(base_index)
+        # Create index with target nlist
+        quantizer = faiss.IndexFlatL2(dimension)
+        base_index = faiss.IndexIVFPQ(quantizer, dimension, target_nlist, m, nbits)
+        index = faiss.IndexIDMap(base_index)
 
         base_index.train(train_data)
         is_trained = True
-        print("Index trained successfully! You can now add vectors.")
+        print(f"✓ Index trained successfully!\n")
 
         # Clear training data to free memory
         training_embeddings.clear()
     else:
-        print(f"Not enough vectors to train ({n_vectors} < {min_train_vectors}), collecting more data...")
+        # Reduce spam - only print every 5000 vectors
+        if n_vectors % 5000 < 1024:
+            pct = n_vectors * 100 // min_train_vectors
+            print(f"  Collecting training data: {n_vectors:,}/{min_train_vectors:,} vectors ({pct}%)")
 
 def add_file_to_index(file_faiss_index: int, text: str):
     global chunk_metadata
@@ -170,71 +169,48 @@ def add_file_to_index(file_faiss_index: int, text: str):
     return len(chunks)
 
 
-def add_files_to_index_batch(files_data: list[tuple[int, str]], batch_size: int = 1024):
+def add_encoded_batch_to_index(embeddings: np.ndarray, file_indices: list[int],
+                                chunk_numbers: list[int], chunk_texts: list[str]):
     """
-    Add multiple files to index with batched encoding across all files
-    Uses PQ compression after training on initial batches
+    Add pre-encoded batch directly to index (for streaming pipeline)
 
     Args:
-        files_data: List of tuples (file_faiss_index, text)
-        batch_size: Batch size for encoding (default 1024, optimal for MPS)
+        embeddings: Pre-encoded embeddings array
+        file_indices: List of file FAISS indices
+        chunk_numbers: List of chunk numbers within each file
+        chunk_texts: List of chunk text content
 
     Returns:
-        Total number of chunks added
+        Number of chunks added
     """
     global chunk_metadata, training_embeddings, is_trained
 
-    # Collect all chunks from all files with their metadata
-    all_chunks = []
-    chunk_info = []
-
-    for file_faiss_index, text in files_data:
-        chunks = chunk_text(text)
-        if not chunks:
-            continue
-
-        for chunk_num, chunk_content in enumerate(chunks):
-            all_chunks.append(chunk_content)
-            chunk_info.append((file_faiss_index, chunk_num, chunk_content))
-
-    if not all_chunks:
+    if len(embeddings) == 0:
         return 0
 
-    # Encode all chunks at once with batching
-    print(f"  Encoding {len(all_chunks)} chunks from {len(files_data)} files...")
-    all_embeddings = encode_chunks(all_chunks, batch_size=batch_size)
-
     # If not trained, collect embeddings for training
-    was_trained_before = is_trained
     if not is_trained:
-        training_embeddings.append(all_embeddings)
+        training_embeddings.append(embeddings)
         train_index_if_needed()
 
-    # Add to metadata
+    # Create chunk IDs and metadata
     chunk_ids = []
-    for file_faiss_index, chunk_num, chunk_content in chunk_info:
-        chunk_id = file_faiss_index * 10000 + chunk_num
+    for file_idx, chunk_num, chunk_text in zip(file_indices, chunk_numbers, chunk_texts):
+        chunk_id = file_idx * 10000 + chunk_num
         chunk_ids.append(chunk_id)
 
         chunk_metadata.append({
             'faiss_id': int(chunk_id),
-            'file_faiss_index': file_faiss_index,
-            'chunk_text': chunk_content
+            'file_faiss_index': file_idx,
+            'chunk_text': chunk_text
         })
 
-    # Add all embeddings to FAISS only if trained
-    # This includes the training batch itself if training just completed
+    # Add to FAISS if trained
     if is_trained:
         chunk_ids_array = np.array(chunk_ids, dtype=np.int64)
-        index.add_with_ids(all_embeddings, chunk_ids_array)
-        if was_trained_before:
-            print(f"  Added {len(all_chunks)} chunks to IVF-PQ index")
-        else:
-            print(f"  Added {len(all_chunks)} chunks to IVF-PQ index (including training data)")
-    else:
-        print(f"  Collected {len(all_chunks)} chunks (waiting for training)")
+        index.add_with_ids(embeddings, chunk_ids_array)
 
-    return len(all_chunks)
+    return len(embeddings)
 
 
 def search_similar_with_reranking(query: str, k: int = 5, initial_k: int = 100):
