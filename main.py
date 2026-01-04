@@ -1,14 +1,21 @@
 import os
 from multiprocessing import Pool, cpu_count
 import signal
-from functools import wraps
 from database import *
 from database import create_files_bulk
 from file_reader import read_file, CODE_FILE_EXTENSIONS, TEXT_FILE_EXTENSIONS
-from vector_search import load_index, save_index, remove_file_from_index
-from vector_search import add_file_to_index, add_files_to_index_batch, search_similar_with_reranking
+from exceptions import TimeoutException, timeout_handler
 
+# Lazy imports - only import when needed to avoid loading ML models on startup
+def _lazy_import_vector_search():
+    global load_index, save_index, remove_file_from_index
+    global add_file_to_index, add_files_to_index_batch, search_similar_with_reranking
+    from vector_search import load_index, save_index, remove_file_from_index
+    from vector_search import add_file_to_index, add_files_to_index_batch, search_similar_with_reranking
 
+def _lazy_import_background_indexer():
+    global add_to_background_queue, start_background_indexer
+    from background_indexer import add_to_background_queue, start_background_indexer
 
 search_directory = "/Users/atharvazaveri/"
 SUPPORTED_EXTENSIONS = tuple(['.pdf', '.docx', '.pptx'] + list(TEXT_FILE_EXTENSIONS) + list(CODE_FILE_EXTENSIONS))
@@ -62,12 +69,6 @@ def check_modified_file(file_path: str, hashed_file: str) -> bool:
         return True
     return existing_file.file_hash != hashed_file
 
-class TimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutException()
-
 def _read_file_safe(file_path: str):
     """Wrapper for multiprocessing - catches exceptions per file with timeout"""
     try:
@@ -91,6 +92,10 @@ def _read_file_safe(file_path: str):
 
 def index_files():
     import time
+
+    # Import vector search and background indexer modules
+    _lazy_import_vector_search()
+    _lazy_import_background_indexer()
 
     print("Loading existing FAISS index...")
     load_index()
@@ -234,62 +239,19 @@ def index_files():
                 batch_time = time.time() - batch_start
                 print(f"  Batch {batch_num} total time: {batch_time:.1f}s")
 
-        # Retry timeout files with longer timeout
+        # Queue timeout files for background indexing
         if timeout_files:
-            print(f"\n⏱️  Retrying {len(timeout_files)} files that timed out (timeout: 30s)...")
-            global FILE_READ_TIMEOUT
-            original_timeout = FILE_READ_TIMEOUT
-            FILE_READ_TIMEOUT = 30  # Longer timeout for retry
+            print(f"\n⏱️  {len(timeout_files)} files timed out - queuing for background indexing...")
+            print(f"   You can start searching now while these files index in the background.")
 
-            retry_start = time.time()
-            retry_success = []
-            retry_failed = []
+            # Start background indexer
+            start_background_indexer()
 
+            # Add all timeout files to background queue with 60s timeout
             for file_path in timeout_files:
-                result = _read_file_safe(file_path)
-                if result and not (isinstance(result, tuple) and len(result) == 2 and result[0] is None):
-                    retry_success.append((file_path, result))
-                else:
-                    retry_failed.append(file_path)
+                add_to_background_queue(file_path, timeout_seconds=60)
 
-            FILE_READ_TIMEOUT = original_timeout  # Restore original timeout
-
-            retry_time = time.time() - retry_start
-            print(f"\n  Successfully read {len(retry_success)} files in retry ({retry_time:.1f}s)")
-            if retry_failed:
-                print(f"  Still failed: {len(retry_failed)} files")
-
-            # Index the successfully retried files
-            if retry_success:
-                print(f"\n  Indexing {len(retry_success)} retry files...")
-                for file_path, file_data_tuple in retry_success:
-                    existing_file = get_file_by_path(file_data_tuple[0])
-                    if existing_file:
-                        # Update existing file
-                        try:
-                            remove_file_from_index(existing_file.faiss_index)
-                            add_file_to_index(existing_file.faiss_index, file_data_tuple[4])
-                            update_file(file_id=existing_file.file_id,
-                                      file_path=file_data_tuple[0],
-                                      file_name=file_data_tuple[1],
-                                      file_hash=file_data_tuple[2],
-                                      modified_time=file_data_tuple[3])
-                            print(f"    ✓ Updated: {file_data_tuple[1]}")
-                        except Exception as e:
-                            print(f"    ⚠️  Error updating {file_data_tuple[1]}: {e}")
-                    else:
-                        # Add as new file
-                        try:
-                            faiss_idx = max([f.faiss_index for f in get_all_files()] + [0]) + 1
-                            create_file(file_path=file_data_tuple[0],
-                                      file_name=file_data_tuple[1],
-                                      file_hash=file_data_tuple[2],
-                                      modified_time=file_data_tuple[3],
-                                      faiss_index=faiss_idx)
-                            add_file_to_index(faiss_idx, file_data_tuple[4])
-                            print(f"    ✓ Added: {file_data_tuple[1]}")
-                        except Exception as e:
-                            print(f"    ⚠️  Error adding {file_data_tuple[1]}: {e}")
+            print(f"   Background indexer started. Check status with get_background_status()")
 
     finally:
         # Always save the index, even if there were errors during processing
@@ -305,6 +267,9 @@ def search_files(query: str, k: int = 5, exclude_code_files: bool = True):
         k: Number of results to return
         exclude_code_files: If True, filters out code files (.py, .js, etc.) from results
     """
+    # Import vector search module
+    _lazy_import_vector_search()
+
     load_index()
     # Request more chunks to ensure we get k unique files after deduplication and filtering
     # Use 5x multiplier to account for both deduplication and code file filtering
