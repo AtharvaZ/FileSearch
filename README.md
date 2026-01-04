@@ -1,23 +1,23 @@
 # FileSearch
 
-Ever spent 20 minutes hunting for that PDF you *know* you saved somewhere? Yeah, me too.
+Ever spent 20 minutes hunting for that PDF you _know_ you saved somewhere? Yeah, me too.
 
-FileSearch uses AI-powered semantic search to find your documents by *what they mean*, not just what they're named. Built with FAISS and sentence transformers, it's like having a photographic memory for all your files - minus the superhero origin story.
+FileSearch uses AI-powered semantic search to find your documents by _what they mean_, not just what they're named. Built with FAISS and sentence transformers, it's like having a photographic memory for all your files - minus the superhero origin story.
 
 ## Features
 
-- **Semantic Search**: Uses FAISS and sentence transformers for intelligent content-based search
+- **Semantic Search**: FAISS and sentence transformers for intelligent content-based search
 - **Two-Stage Reranking**: Cross-encoder reranking for improved search accuracy (20-30% fewer false positives)
 - **Product Quantization**: IVF-PQ compression for 8-16x less storage with minimal accuracy loss
+- **Background Indexing**: Search immediately while slow files continue indexing in the background
+- **Fast PDF Reading**: pdfplumber for 2-3x faster PDF text extraction
 - **GPU Acceleration**: Automatic GPU support (CUDA/MPS) for 10-30x faster encoding
-- **Parallel Processing**: Multiprocessing for fast file reading
-- **Batch Indexing**: Efficiently indexes large document collections (1000 files per batch)
-- **Incremental Updates**: Only re-indexes modified files with hash-based change detection
+- **Parallel File Reading**: Multiprocessing for fast file reading across CPU cores
+- **Batch Encoding**: Efficiently encodes large document collections (1024 chunks per batch)
 - **Smart Directory Skipping**: Automatically skips 30+ common bloat directories (node_modules, Downloads, Library, etc.)
-- **File Size Filtering**: Skips files larger than 10MB to prevent slowdowns
-- **OOM Protection**: Automatic batch size reduction on GPU memory errors
-- **GUI Interface**: Simple Tkinter-based interface for easy searching
-- **Dual Mode**: CLI for indexing, GUI for searching
+- **Code File Filtering**: Optional exclusion of code files from search results
+- **Lazy Loading**: Instant GUI startup - models load only when needed
+- **Incremental Updates**: Only re-indexes modified files with hash-based change detection
 
 ## Installation
 
@@ -27,7 +27,7 @@ pip install -r requirements.txt
 
 ## Usage
 
-**Index files:**
+**Index your files:**
 
 ```bash
 python main.py
@@ -39,11 +39,25 @@ python main.py
 python main.py --gui
 ```
 
-**Preview files to be indexed:**
+**Nuclear option (reset everything and re-index):**
 
 ```bash
-python dry_run.py
+./reset_and_reindex.sh
 ```
+
+**Found files with 0 chunks? Fix them:**
+
+```bash
+python fix_empty_files.py
+```
+
+**Debug search results:**
+
+```bash
+python diagnose.py "your search query"
+```
+
+See exactly why you're getting weird results - PQ compression? Reranker? Embedding model? Find out!
 
 ## Configuration
 
@@ -55,6 +69,7 @@ Edit these variables in [main.py](main.py) to customize:
 
 **Note on Index Training:**
 The IVF-PQ index requires training before use. The system automatically:
+
 1. Collects embeddings from first few batches
 2. Trains the index when enough data is collected (typically first 1-2 batches)
 3. Adds all vectors to the trained index
