@@ -1,6 +1,9 @@
+import os
+# Suppress macOS Tk deprecation warning
+os.environ['TK_SILENCE_DEPRECATION'] = '1'
+
 import tkinter as tk
 from tkinter import messagebox
-import os
 import subprocess
 import platform
 from main import index_files, search_files
