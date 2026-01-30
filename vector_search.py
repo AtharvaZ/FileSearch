@@ -74,7 +74,7 @@ def add_file_to_index(file_faiss_index: int, text: str):
         return 0
 
     embeddings = encode_chunks(chunks, batch_size=512)
-    chunk_ids = np.array([file_faiss_index * 5000 + i for i in range(len(chunks))], dtype=np.int64)
+    chunk_ids = np.array([file_faiss_index * 10000 + i for i in range(len(chunks))], dtype=np.int64)
     index.add_with_ids(embeddings, chunk_ids)
 
     # Store metadata
@@ -121,7 +121,7 @@ def add_files_to_index_batch(files_data: list[tuple[int, str]], batch_size: int 
     print(f"Encoding {len(all_chunks)} chunks from {len(files_data)} files...")
     all_embeddings = encode_chunks(all_chunks, batch_size=batch_size)
 
-    # Add to FAISS and metadata
+    # Add to metadata
     chunk_ids = []
     for file_faiss_index, chunk_num, chunk_content in chunk_info:
         chunk_id = file_faiss_index * 10000 + chunk_num
